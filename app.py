@@ -395,7 +395,7 @@ with tab5:
     
     asset_indicators = {
         "VIX": "VIXCLS",
-        "금 ($)": "GOLDAMGBD228NLBM",
+        "10년 실질금리 (TIPS, %)": "DFII10",
         "WTI 유가 ($)": "DCOILWTICO",
         "달러 인덱스": "DTWEXBGS",
         "10년물 국채 (%)": "DGS10",
