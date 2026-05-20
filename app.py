@@ -1,11 +1,10 @@
-# v2.0
-# 매크로 대시보드 - FRED + AI 해설
+# v2.0 - OpenAI Edition
+# 매크로 대시보드 - FRED + GPT-5 mini 해설
 # Made by Raykel
 
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from fredapi import Fred
 from openai import OpenAI
 from datetime import datetime, timedelta
@@ -25,6 +24,10 @@ st.set_page_config(
 @st.cache_resource
 def get_fred():
     return Fred(api_key=st.secrets["FRED_API_KEY"])
+
+@st.cache_resource
+def get_openai():
+    return OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 fred = get_fred()
 
@@ -53,12 +56,8 @@ def get_latest_value(series_id):
         return None, None, None
 
 # ============================================
-# AI 해설 함수
+# AI 해설 함수 (GPT-5 mini)
 # ============================================
-@st.cache_resource
-def get_openai():
-    return OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-
 @st.cache_data(ttl=3600)
 def ai_commentary(context_data, focus):
     """
@@ -68,18 +67,16 @@ def ai_commentary(context_data, focus):
     try:
         client = get_openai()
         system_msg = "너는 거시경제 분석가야. 한국어로 간결하게 해설해줘."
-        user_msg = f"""[데이터]
-{context_data}
+        user_msg = (
+            f"[데이터]\n{context_data}\n\n"
+            f"[해설 관점]\n{focus}\n\n"
+            "규칙:\n"
+            "- 5문장 이내로 핵심만\n"
+            "- 숫자의 의미와 시장 함의 위주\n"
+            "- 단정적 예측 금지, 가능성 위주로\n"
+            "- 마지막에 '투자자가 주목할 점:' 한 줄 추가"
+        )
 
-[해설 관점]
-{focus}
-
-규칙:
-- 5문장 이내로 핵심만
-- 숫자의 의미와 시장 함의 위주
-- 단정적 예측 금지, 가능성 위주로
-- 마지막에 "투자자가 주목할 점:" 한 줄 추가"""
-        
         response = client.chat.completions.create(
             model="gpt-5-mini",
             max_completion_tokens=400,
@@ -89,27 +86,6 @@ def ai_commentary(context_data, focus):
             ]
         )
         return response.choices[0].message.content
-    except Exception as e:
-        return f"AI 해설 생성 실패: {e}"
-
-[데이터]
-{context_data}
-
-[해설 관점]
-{focus}
-
-규칙:
-- 5문장 이내로 핵심만
-- 숫자의 의미와 시장 함의 위주
-- 단정적 예측 금지, 가능성 위주로
-- 마지막에 "투자자가 주목할 점:" 한 줄 추가
-"""
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=400,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return msg.content[0].text
     except Exception as e:
         return f"AI 해설 생성 실패: {e}"
 
@@ -157,7 +133,6 @@ with tab1:
             continue
         
         if "YoY" in label:
-            # CPI는 전년대비로 변환
             data = load_series(sid, years=2)
             yoy = data.pct_change(periods=12).dropna() * 100
             if len(yoy) > 0:
@@ -173,7 +148,7 @@ with tab1:
     st.divider()
     
     if st.button("🤖 Overview AI 해설 보기", key="overview_ai"):
-        with st.spinner("Claude Haiku가 분석 중..."):
+        with st.spinner("GPT-5 mini가 분석 중..."):
             commentary = ai_commentary(
                 overview_summary,
                 "미국 거시경제 현황을 종합적으로 진단해줘. 인플레이션, 고용, 금리, 시장 변동성을 묶어서."
@@ -288,7 +263,7 @@ with tab2:
     if st.button("🤖 침체 신호 AI 해설 보기", key="recession_ai"):
         ctx = {name: info["value"] for name, info in signals.items()}
         ctx["점등 신호 수"] = f"{score}/{total}"
-        with st.spinner("Claude Haiku가 분석 중..."):
+        with st.spinner("GPT-5 mini가 분석 중..."):
             commentary = ai_commentary(
                 ctx,
                 "경기 침체 신호들을 종합 진단해줘. 어떤 단계인지, 무엇을 더 주시해야 하는지."
@@ -325,7 +300,7 @@ with tab3:
                 latest = yoy.iloc[-1]
                 prev = yoy.iloc[-2]
         elif "조달러" in label:
-            latest = latest / 1e6  # 단위 조정
+            latest = latest / 1e6
             prev = prev / 1e6 if prev else prev
         
         delta = latest - prev if prev is not None else 0
@@ -349,7 +324,7 @@ with tab3:
         st.plotly_chart(fig, use_container_width=True)
     
     if st.button("🤖 연준 정책 AI 해설 보기", key="fed_ai"):
-        with st.spinner("Claude Haiku가 분석 중..."):
+        with st.spinner("GPT-5 mini가 분석 중..."):
             commentary = ai_commentary(
                 fed_summary,
                 "연준의 통화정책 스탠스를 진단해줘. 금리, 대차대조표, 인플레 기대를 묶어서 다음 행보 가능성도."
@@ -405,7 +380,7 @@ with tab4:
         st.plotly_chart(fig, use_container_width=True)
     
     if st.button("🤖 한국 매크로 AI 해설 보기", key="korea_ai"):
-        with st.spinner("Claude Haiku가 분석 중..."):
+        with st.spinner("GPT-5 mini가 분석 중..."):
             commentary = ai_commentary(
                 korea_summary,
                 "한국 경제 상황을 진단해줘. 환율, 물가, 고용, 금리를 묶어서 한국 투자자 관점에서."
@@ -460,7 +435,7 @@ with tab5:
     st.plotly_chart(fig, use_container_width=True)
     
     if st.button("🤖 자산군 AI 해설 보기", key="asset_ai"):
-        with st.spinner("Claude Haiku가 분석 중..."):
+        with st.spinner("GPT-5 mini가 분석 중..."):
             commentary = ai_commentary(
                 asset_summary,
                 "자산군 현황을 진단해줘. VIX, 금, 유가, 달러, 채권 금리, 신용 스프레드의 조합으로 본 시장 심리."
