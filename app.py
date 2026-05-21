@@ -85,13 +85,20 @@ def ai_commentary(context_data, focus):
 
         response = client.chat.completions.create(
             model="gpt-5-mini",
-            max_completion_tokens=500,
+            max_completion_tokens=800,
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg}
             ]
         )
-        return response.choices[0].message.content
+        result = response.choices[0].message.content
+        
+        # 디버깅: 응답이 비어있으면 원인 표시
+        if not result or not result.strip():
+            finish_reason = response.choices[0].finish_reason
+            return f"⚠️ AI 응답이 비어있음 (finish_reason: {finish_reason})\n\n[보낸 데이터]\n{context_data}"
+        
+        return result
     except Exception as e:
         return f"AI 해설 생성 실패: {e}"
 
@@ -837,28 +844,42 @@ with tab7:
         st.write(f"{name}: **{val}**")
     
     # ====== AI 해설 ======
-    if st.button("🤖 종목 AI 해설 보기", key="stock_ai"):
+if st.button("🤖 종목 AI 해설 보기", key="stock_ai"):
+        # 안전한 컨텍스트 생성 (None 값 정리)
+        name_str = info.get("name") or selected_ticker
+        
         stock_ctx = {
-            "종목": f"{info.get('name')} ({selected_ticker})",
+            "종목": f"{name_str} ({selected_ticker})",
+            "시장": "미국" if selected_market == "US" else "한국",
             "현재가": f"{symbol}{current_price:,.2f}",
             "1일 변동": f"{daily_change:+.2f}%",
-            "RSI": f"{rsi_now:.1f}",
+            "RSI(14)": f"{rsi_now:.1f}",
             "MACD": f"{macd_now:.2f} vs Signal {macd_signal:.2f}",
             "이동평균 정렬": "정배열" if current_price > ma20_now > ma60_now > ma120_now else 
                           ("역배열" if current_price < ma20_now < ma60_now < ma120_now else "혼조"),
             "볼린저 위치": f"{bb_pos*100:.0f}%",
-            "52주 위치": f"최고대비 {(current_price/info['52w_high']-1)*100:+.1f}%" if info['52w_high'] else "N/A",
+            "52주 위치": f"최고대비 {(current_price/high52-1)*100:+.1f}%" if high52 else "데이터 없음",
         }
+        
+        # 미국 종목의 펀더멘털 (None 아닌 것만)
         if selected_market == "US":
-            stock_ctx["PER"] = info.get("pe")
-            stock_ctx["섹터"] = info.get("sector")
+            pe = info.get("pe")
+            sector = info.get("sector")
+            if pe is not None:
+                stock_ctx["PER"] = f"{pe:.1f}"
+            if sector and sector != "N/A":
+                stock_ctx["섹터"] = sector
         
         with st.spinner("GPT-5 mini가 분석 중..."):
             commentary = ai_commentary(
                 stock_ctx,
-                f"{info.get('name')} 종목의 현재 상황을 진단해줘. 기술적 지표와 펀더멘털(가능한 경우)을 균형있게."
+                f"{name_str} 종목의 현재 상황을 진단해줘. 기술적 지표 위주로 보되, 펀더멘털 정보가 있으면 균형있게 활용해줘."
             )
-            st.info(commentary)
+            
+            if commentary:
+                st.info(commentary)
+            else:
+                st.warning("해설을 받지 못했어요. 다시 시도해주세요.")
     
     st.divider()
     
