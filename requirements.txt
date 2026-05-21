@@ -8,3 +8,5 @@ finance-datareader
 supabase==2.9.1
 ta
 lxml
+opendartreader
+requests
