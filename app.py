@@ -164,7 +164,197 @@ def get_stock_info(ticker, market):
     except Exception as e:
         st.warning(f"종목 정보 일부 누락: {e}")
     return info
+# ============================================
+# 펀더멘털 데이터 로딩 (재무제표)
+# ============================================
+@st.cache_data(ttl=86400)  # 24시간 캐시 (재무는 자주 안 바뀜)
+def load_financials(ticker, market):
+    """재무제표 데이터 가져오기"""
+    result = {
+        "income_stmt": None,
+        "balance_sheet": None,
+        "cashflow": None,
+        "quarterly_income": None,
+        "key_metrics": {},
+    }
+    
+    try:
+        if market == "US":
+            t = yf.Ticker(ticker)
+            
+            # 연간 재무제표
+            try:
+                result["income_stmt"] = t.income_stmt
+                result["balance_sheet"] = t.balance_sheet
+                result["cashflow"] = t.cashflow
+                result["quarterly_income"] = t.quarterly_income_stmt
+            except:
+                pass
+            
+            # 주요 지표
+            info = t.info
+            result["key_metrics"] = {
+                "시가총액": info.get("marketCap"),
+                "매출 (TTM)": info.get("totalRevenue"),
+                "순이익 (TTM)": info.get("netIncomeToCommon"),
+                "영업이익률": info.get("operatingMargins"),
+                "순이익률": info.get("profitMargins"),
+                "ROE": info.get("returnOnEquity"),
+                "ROA": info.get("returnOnAssets"),
+                "부채비율": info.get("debtToEquity"),
+                "유동비율": info.get("currentRatio"),
+                "PER": info.get("trailingPE"),
+                "Forward PER": info.get("forwardPE"),
+                "PBR": info.get("priceToBook"),
+                "PSR": info.get("priceToSalesTrailing12Months"),
+                "EV/EBITDA": info.get("enterpriseToEbitda"),
+                "배당수익률": info.get("dividendYield"),
+                "매출성장률 (YoY)": info.get("revenueGrowth"),
+                "순이익성장률 (YoY)": info.get("earningsGrowth"),
+            }
+        else:
+            # 한국 종목 - FinanceDataReader는 재무제표 제공 안 함
+            # AI에게 일반 지식으로 분석 요청
+            result["key_metrics"] = {"note": "한국 종목 상세 재무는 DART 연동 필요 (v3.2 예정)"}
+    except Exception as e:
+        st.warning(f"재무 데이터 로딩 일부 실패: {e}")
+    
+    return result
 
+def format_large_number(num, currency="USD"):
+    """큰 숫자를 읽기 쉽게 포맷"""
+    if num is None or pd.isna(num):
+        return "N/A"
+    
+    if currency == "KRW":
+        if abs(num) >= 1e12:
+            return f"₩{num/1e12:.2f}조"
+        elif abs(num) >= 1e8:
+            return f"₩{num/1e8:.1f}억"
+        else:
+            return f"₩{num:,.0f}"
+    else:
+        if abs(num) >= 1e9:
+            return f"${num/1e9:.2f}B"
+        elif abs(num) >= 1e6:
+            return f"${num/1e6:.1f}M"
+        else:
+            return f"${num:,.0f}"
+
+def format_percent(num):
+    """비율 포맷"""
+    if num is None or pd.isna(num):
+        return "N/A"
+    return f"{num*100:.2f}%" if abs(num) < 10 else f"{num:.2f}%"
+
+# ============================================
+# 펀더멘털 AI 분석 함수들
+# ============================================
+@st.cache_data(ttl=86400)
+def ai_financial_analysis(ticker, name, market, key_metrics, recent_trends=""):
+    """재무 분석 - 숫자 기반"""
+    try:
+        client = get_openai()
+        prompt = f"""[{name} ({ticker}, {market}) 재무 분석]
+
+주요 지표:
+{key_metrics}
+
+{recent_trends}
+
+다음 구조로 한국어 분석:
+1. 수익성 평가 (영업이익률, ROE)
+2. 안정성 평가 (부채비율, 유동비율)
+3. 성장성 평가 (매출/이익 성장률)
+4. 밸류에이션 평가 (PER, PBR, PSR)
+5. 종합 의견 (강점 / 약점)
+
+규칙:
+- 숫자 근거를 명확히 인용
+- 동종업계 평균 대비 비교 (대략적으로라도)
+- 단정 금지, '~수준', '~경향' 사용
+- 7-10문장
+"""
+        response = client.chat.completions.create(
+            model="gpt-5-mini",
+            max_completion_tokens=3000,
+            reasoning_effort="low",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        result = response.choices[0].message.content
+        if not result or not result.strip():
+            return f"⚠️ 응답 비어있음 (finish_reason: {response.choices[0].finish_reason})"
+        return result
+    except Exception as e:
+        return f"분석 실패: {e}"
+
+@st.cache_data(ttl=86400)
+def ai_revenue_structure(ticker, name, market, sector="", industry=""):
+    """수익구조 분석"""
+    try:
+        client = get_openai()
+        prompt = f"""[{name} ({ticker}, {market}) 수익구조 분석]
+섹터: {sector} / 산업: {industry}
+
+다음을 한국어로 정리해줘:
+1. 주요 사업부문 / 제품군 (각 부문의 매출 비중을 알 수 있다면 명시)
+2. 핵심 수익원 (Top 3)
+3. 매출 지역별 분포 (국내/해외 비중)
+4. 비즈니스 모델의 특징 (B2B/B2C, 구독/판매 등)
+5. 매출의 안정성 및 계절성
+
+규칙:
+- 최신 사업보고서 기준으로 알고 있는 만큼만 답변
+- 모르는 부분은 '공개된 자료로는 명확하지 않음'으로 표시
+- 추측이 아닌 알려진 사실만
+- 8-12문장
+"""
+        response = client.chat.completions.create(
+            model="gpt-5-mini",
+            max_completion_tokens=3000,
+            reasoning_effort="low",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        result = response.choices[0].message.content
+        if not result or not result.strip():
+            return f"⚠️ 응답 비어있음 (finish_reason: {response.choices[0].finish_reason})"
+        return result
+    except Exception as e:
+        return f"분석 실패: {e}"
+
+@st.cache_data(ttl=86400)
+def ai_company_history(ticker, name, market):
+    """연혁 분석"""
+    try:
+        client = get_openai()
+        prompt = f"""[{name} ({ticker}, {market}) 회사 연혁]
+
+다음 구조로 한국어 정리:
+1. 창립 (연도, 창업자, 초기 사업)
+2. 주요 변곡점 (대형 인수, 사업 전환, IPO 등 5-7개)
+3. 현재 CEO / 핵심 경영진
+4. 주요 경쟁사 (3-5개)
+5. 최근 3-5년 주요 이슈
+
+규칙:
+- 알려진 사실만, 모르면 '확인 필요'
+- 연도와 함께 서술
+- 너무 옛날 얘기는 핵심만, 최근 사건은 자세히
+- 10-15문장
+"""
+        response = client.chat.completions.create(
+            model="gpt-5-mini",
+            max_completion_tokens=3500,
+            reasoning_effort="low",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        result = response.choices[0].message.content
+        if not result or not result.strip():
+            return f"⚠️ 응답 비어있음 (finish_reason: {response.choices[0].finish_reason})"
+        return result
+    except Exception as e:
+        return f"분석 실패: {e}"
+        
 # ============================================
 # 기술적 지표 계산
 # ============================================
@@ -878,6 +1068,123 @@ with tab7:
                 st.info(commentary)
             else:
                 st.warning("해설을 받지 못했어요. 다시 시도해주세요.")
+    
+    st.divider()
+    # ====== 펀더멘털 분석 (v3.1 신규) ======
+    st.subheader("📚 펀더멘털 분석")
+    st.caption("⚠️ AI 일반 지식 기반이라 최신 정보는 부정확할 수 있어요. 중요 결정 전엔 공식 자료 확인 권장.")
+    
+    fund_tab1, fund_tab2, fund_tab3 = st.tabs(["💰 재무 분석", "🏢 수익구조", "📜 연혁"])
+    
+    # --- 재무 분석 ---
+    with fund_tab1:
+        if st.button("📊 재무 데이터 불러오기 + AI 분석", key="fin_btn"):
+            with st.spinner("재무제표 가져오는 중..."):
+                fin_data = load_financials(selected_ticker, selected_market)
+            
+            metrics = fin_data["key_metrics"]
+            
+            if selected_market == "US" and metrics.get("매출 (TTM)"):
+                # 주요 지표 카드 표시
+                st.write("**📌 주요 재무 지표 (TTM 기준)**")
+                
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("시가총액", format_large_number(metrics.get("시가총액"), "USD"))
+                c2.metric("매출 (TTM)", format_large_number(metrics.get("매출 (TTM)"), "USD"))
+                c3.metric("순이익 (TTM)", format_large_number(metrics.get("순이익 (TTM)"), "USD"))
+                c4.metric("매출 성장률", format_percent(metrics.get("매출성장률 (YoY)")))
+                
+                c5, c6, c7, c8 = st.columns(4)
+                c5.metric("영업이익률", format_percent(metrics.get("영업이익률")))
+                c6.metric("순이익률", format_percent(metrics.get("순이익률")))
+                c7.metric("ROE", format_percent(metrics.get("ROE")))
+                c8.metric("ROA", format_percent(metrics.get("ROA")))
+                
+                c9, c10, c11, c12 = st.columns(4)
+                c9.metric("PER (TTM)", f"{metrics.get('PER'):.1f}" if metrics.get("PER") else "N/A")
+                c10.metric("Forward PER", f"{metrics.get('Forward PER'):.1f}" if metrics.get("Forward PER") else "N/A")
+                c11.metric("PBR", f"{metrics.get('PBR'):.2f}" if metrics.get("PBR") else "N/A")
+                c12.metric("PSR", f"{metrics.get('PSR'):.2f}" if metrics.get("PSR") else "N/A")
+                
+                c13, c14, c15, c16 = st.columns(4)
+                c13.metric("EV/EBITDA", f"{metrics.get('EV/EBITDA'):.1f}" if metrics.get("EV/EBITDA") else "N/A")
+                c14.metric("부채비율 (D/E)", f"{metrics.get('부채비율'):.0f}" if metrics.get("부채비율") else "N/A")
+                c15.metric("유동비율", f"{metrics.get('유동비율'):.2f}" if metrics.get("유동비율") else "N/A")
+                c16.metric("배당수익률", format_percent(metrics.get("배당수익률")))
+                
+                # 연간 매출 추이 차트
+                if fin_data["income_stmt"] is not None and not fin_data["income_stmt"].empty:
+                    try:
+                        income = fin_data["income_stmt"]
+                        if "Total Revenue" in income.index:
+                            revenue = income.loc["Total Revenue"].dropna()
+                            if len(revenue) > 0:
+                                fig_rev = go.Figure()
+                                fig_rev.add_trace(go.Bar(
+                                    x=[d.strftime("%Y") for d in revenue.index],
+                                    y=revenue.values / 1e9,
+                                    marker_color='#1f77b4',
+                                    text=[f"${v/1e9:.1f}B" for v in revenue.values],
+                                    textposition='outside'
+                                ))
+                                fig_rev.update_layout(
+                                    title="연간 매출 추이 (Billion USD)",
+                                    height=350, template='plotly_white', showlegend=False
+                                )
+                                st.plotly_chart(fig_rev, use_container_width=True)
+                    except Exception as e:
+                        st.caption(f"매출 차트 표시 실패: {e}")
+                
+                # AI 분석
+                st.divider()
+                st.write("**🤖 AI 재무 분석**")
+                with st.spinner("GPT-5 mini가 재무 분석 중..."):
+                    # AI에게 보낼 정리된 텍스트
+                    metrics_text = "\n".join([
+                        f"- {k}: {format_percent(v) if k in ['영업이익률', '순이익률', 'ROE', 'ROA', '배당수익률', '매출성장률 (YoY)', '순이익성장률 (YoY)'] else (format_large_number(v, 'USD') if k in ['시가총액', '매출 (TTM)', '순이익 (TTM)'] else (f'{v:.2f}' if isinstance(v, (int, float)) else 'N/A'))}"
+                        for k, v in metrics.items() if v is not None
+                    ])
+                    analysis = ai_financial_analysis(
+                        selected_ticker, info.get("name", selected_ticker), selected_market,
+                        metrics_text, f"섹터: {info.get('sector', 'N/A')}"
+                    )
+                    st.info(analysis)
+            
+            elif selected_market == "KR":
+                st.warning("🇰🇷 한국 종목은 yfinance/FinanceDataReader로 상세 재무가 제한적입니다. v3.2에서 DART API 연동 예정.")
+                st.write("**대안:** AI의 일반 지식 기반 분석 (정확도 제한)")
+                with st.spinner("GPT-5 mini가 분석 중..."):
+                    analysis = ai_financial_analysis(
+                        selected_ticker, info.get("name", selected_ticker), selected_market,
+                        "정량 데이터 미제공 - 일반 지식 기반 정성 분석 요청", ""
+                    )
+                    st.info(analysis)
+            else:
+                st.warning("재무 데이터를 가져올 수 없습니다.")
+    
+    # --- 수익구조 분석 ---
+    with fund_tab2:
+        if st.button("🏢 수익구조 AI 분석", key="rev_btn"):
+            with st.spinner("GPT-5 mini가 사업구조 분석 중..."):
+                analysis = ai_revenue_structure(
+                    selected_ticker,
+                    info.get("name", selected_ticker),
+                    selected_market,
+                    info.get("sector", ""),
+                    info.get("industry", "")
+                )
+                st.info(analysis)
+    
+    # --- 연혁 분석 ---
+    with fund_tab3:
+        if st.button("📜 회사 연혁 AI 분석", key="hist_btn"):
+            with st.spinner("GPT-5 mini가 연혁 정리 중..."):
+                analysis = ai_company_history(
+                    selected_ticker,
+                    info.get("name", selected_ticker),
+                    selected_market
+                )
+                st.info(analysis)
     
     st.divider()
     
