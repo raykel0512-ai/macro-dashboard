@@ -844,7 +844,7 @@ with tab7:
         st.write(f"{name}: **{val}**")
     
     # ====== AI 해설 ======
-if st.button("🤖 종목 AI 해설 보기", key="stock_ai"):
+    if st.button("🤖 종목 AI 해설 보기", key="stock_ai"):
         # 안전한 컨텍스트 생성 (None 값 정리)
         name_str = info.get("name") or selected_ticker
         
