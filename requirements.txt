@@ -1,9 +1,10 @@
 streamlit
 fredapi
-pandas
+pandas<2.3
 plotly
 openai
 yfinance
-FinanceDataReader
-supabase
+finance-datareader
+supabase==2.9.1
 ta
+lxml
