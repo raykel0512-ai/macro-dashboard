@@ -85,7 +85,8 @@ def ai_commentary(context_data, focus):
 
         response = client.chat.completions.create(
             model="gpt-5-mini",
-            max_completion_tokens=800,
+            max_completion_tokens=3000,
+            reasoning_effort="low",
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg}
