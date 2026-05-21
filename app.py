@@ -862,24 +862,24 @@ if st.button("🤖 종목 AI 해설 보기", key="stock_ai"):
         }
         
         # 미국 종목의 펀더멘털 (None 아닌 것만)
-        if selected_market == "US":
-            pe = info.get("pe")
-            sector = info.get("sector")
-            if pe is not None:
-                stock_ctx["PER"] = f"{pe:.1f}"
-            if sector and sector != "N/A":
-                stock_ctx["섹터"] = sector
+    if selected_market == "US":
+        pe = info.get("pe")
+        sector = info.get("sector")
+        if pe is not None:
+            stock_ctx["PER"] = f"{pe:.1f}"
+        if sector and sector != "N/A":
+            stock_ctx["섹터"] = sector
+    
+    with st.spinner("GPT-5 mini가 분석 중..."):
+        commentary = ai_commentary(
+            stock_ctx,
+            f"{name_str} 종목의 현재 상황을 진단해줘. 기술적 지표 위주로 보되, 펀더멘털 정보가 있으면 균형있게 활용해줘."
+        )
         
-        with st.spinner("GPT-5 mini가 분석 중..."):
-            commentary = ai_commentary(
-                stock_ctx,
-                f"{name_str} 종목의 현재 상황을 진단해줘. 기술적 지표 위주로 보되, 펀더멘털 정보가 있으면 균형있게 활용해줘."
-            )
-            
-            if commentary:
-                st.info(commentary)
-            else:
-                st.warning("해설을 받지 못했어요. 다시 시도해주세요.")
+        if commentary:
+            st.info(commentary)
+        else:
+            st.warning("해설을 받지 못했어요. 다시 시도해주세요.")
     
     st.divider()
     
