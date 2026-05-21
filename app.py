@@ -714,24 +714,38 @@ with tab7:
     currency = info.get("currency", "USD")
     symbol = "₩" if currency == "KRW" else "$"
     
+    # 52주 데이터 안전 처리
+    high52 = info.get("52w_high")
+    low52 = info.get("52w_low")
+    
+    # 52주 데이터가 없으면 차트 데이터에서 직접 계산
+    if not high52 and len(df) > 0:
+        high52 = df["High"].max()
+    if not low52 and len(df) > 0:
+        low52 = df["Low"].min()
+    
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("현재가", f"{symbol}{current_price:,.2f}", f"{daily_change:+.2f}%")
     col2.metric("52주 최고", 
-                f"{symbol}{info['52w_high']:,.2f}" if info['52w_high'] else "N/A",
-                f"{(current_price/info['52w_high']-1)*100:+.1f}%" if info['52w_high'] else "")
+                f"{symbol}{high52:,.2f}" if high52 else "N/A",
+                f"{(current_price/high52-1)*100:+.1f}%" if high52 else "")
     col3.metric("52주 최저",
-                f"{symbol}{info['52w_low']:,.2f}" if info['52w_low'] else "N/A",
-                f"{(current_price/info['52w_low']-1)*100:+.1f}%" if info['52w_low'] else "")
+                f"{symbol}{low52:,.2f}" if low52 else "N/A",
+                f"{(current_price/low52-1)*100:+.1f}%" if low52 else "")
     col4.metric("RSI (14)", f"{df['RSI'].iloc[-1]:.1f}",
                 "과매수" if df['RSI'].iloc[-1] > 70 else ("과매도" if df['RSI'].iloc[-1] < 30 else "중립"))
     
-    # 추가 펀더멘털 (미국 종목만)
+# 추가 펀더멘털 (미국 종목만)
     if selected_market == "US" and info.get("pe"):
         col5, col6, col7, col8 = st.columns(4)
-        col5.metric("PER", f"{info['pe']:.1f}" if info['pe'] else "N/A")
-        col6.metric("Forward PER", f"{info['forward_pe']:.1f}" if info['forward_pe'] else "N/A")
-        col7.metric("PBR", f"{info['pb']:.2f}" if info['pb'] else "N/A")
-        col8.metric("배당수익률", f"{info['dividend_yield']*100:.2f}%" if info['dividend_yield'] else "N/A")
+        pe = info.get("pe")
+        fwd_pe = info.get("forward_pe")
+        pb = info.get("pb")
+        dy = info.get("dividend_yield")
+        col5.metric("PER", f"{pe:.1f}" if pe else "N/A")
+        col6.metric("Forward PER", f"{fwd_pe:.1f}" if fwd_pe else "N/A")
+        col7.metric("PBR", f"{pb:.2f}" if pb else "N/A")
+        col8.metric("배당수익률", f"{dy*100:.2f}%" if dy else "N/A")
         st.caption(f"섹터: {info.get('sector', 'N/A')} | 산업: {info.get('industry', 'N/A')}")
     
     st.divider()
