@@ -3,3 +3,7 @@ fredapi
 pandas
 plotly
 openai
+yfinance
+FinanceDataReader
+supabase
+ta
