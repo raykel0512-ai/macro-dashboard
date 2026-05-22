@@ -1016,7 +1016,11 @@ with tab7:
         with col_b:
             new_name = st.text_input("종목명", placeholder="Apple", key="new_name")
         with col_c:
-            new_market = st.selectbox("시장", ["US", "KR"], key="new_market")
+            new_market = st.selectbox(
+                "시장", ["US", "KR", "EU"], 
+                key="new_market",
+                help="EU: 유럽 (티커는 .PA, .DE, .AS, .L 등 거래소 접미사 포함)"
+            )
         with col_d:
             st.write("")
             st.write("")
