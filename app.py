@@ -109,8 +109,9 @@ def ai_commentary(context_data, focus):
 # 주식 데이터 로딩
 # ============================================
 @st.cache_data(ttl=900)  # 15분 캐시
+@st.cache_data(ttl=900)
 def load_stock_data(ticker, market, years=2):
-    """주식 데이터 가져오기"""
+    """주식 데이터 가져오기 (US/KR/EU 지원)"""
     end = datetime.now()
     start = end - timedelta(days=365 * years)
     try:
@@ -118,8 +119,22 @@ def load_stock_data(ticker, market, years=2):
             df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
+        
+        elif market == "EU":
+            # 유럽 종목은 yfinance로 직접 (티커에 거래소 접미사 포함되어 있어야 함)
+            df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+        
         else:  # KR
-            df = fdr.DataReader(ticker, start, end)
+            try:
+                df = fdr.DataReader(ticker, start, end)
+                if df.empty:
+                    raise Exception("FinanceDataReader 빈 데이터")
+            except:
+                df = yf.download(f"{ticker}.KS", start=start, end=end, progress=False, auto_adjust=True)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
         
         df = df.dropna()
         return df
@@ -128,11 +143,13 @@ def load_stock_data(ticker, market, years=2):
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)
 def get_stock_info(ticker, market):
-    """종목 기본 정보"""
+    """종목 기본 정보 (US/KR/EU)"""
     info = {}
     try:
-        if market == "US":
+        if market in ("US", "EU"):
+            # 미국·유럽 둘 다 yfinance 사용
             t = yf.Ticker(ticker)
             raw = t.info
             info = {
@@ -146,10 +163,9 @@ def get_stock_info(ticker, market):
                 "dividend_yield": raw.get("dividendYield", 0),
                 "52w_high": raw.get("fiftyTwoWeekHigh", None),
                 "52w_low": raw.get("fiftyTwoWeekLow", None),
-                "currency": raw.get("currency", "USD"),
+                "currency": raw.get("currency", "USD" if market == "US" else "EUR"),
             }
-        else:
-            # 한국 주식은 정보가 제한적 — 기본만
+        else:  # KR
             info = {
                 "name": ticker,
                 "sector": "N/A",
@@ -166,10 +182,12 @@ def get_stock_info(ticker, market):
     except Exception as e:
         st.warning(f"종목 정보 일부 누락: {e}")
     return info
+    
 # ============================================
 # 펀더멘털 데이터 로딩 (재무제표)
 # ============================================
 @st.cache_data(ttl=86400)  # 24시간 캐시 (재무는 자주 안 바뀜)
+@st.cache_data(ttl=86400)
 def load_financials(ticker, market):
     """재무제표 데이터 가져오기"""
     result = {
@@ -181,7 +199,7 @@ def load_financials(ticker, market):
     }
     
     try:
-        if market == "US":
+        if market in ("US", "EU"):
             t = yf.Ticker(ticker)
             
             # 연간 재무제표
@@ -1081,7 +1099,16 @@ with tab7:
     daily_change = (current_price - prev_price) / prev_price * 100
     
     currency = info.get("currency", "USD")
-    symbol = "₩" if currency == "KRW" else "$"
+    if currency == "KRW":
+        symbol = "₩"
+    elif currency == "EUR":
+        symbol = "€"
+    elif currency == "GBP":
+        symbol = "£"
+    elif currency == "CHF":
+        symbol = "CHF "
+    else:
+        symbol = "$"
     
     # 52주 데이터 안전 처리
     high52 = info.get("52w_high")
@@ -1105,7 +1132,7 @@ with tab7:
                 "과매수" if df['RSI'].iloc[-1] > 70 else ("과매도" if df['RSI'].iloc[-1] < 30 else "중립"))
     
 # 추가 펀더멘털 (미국 종목만)
-    if selected_market == "US" and info.get("pe"):
+    if selected_market in ("US", "EU") and info.get("pe"):
         col5, col6, col7, col8 = st.columns(4)
         pe = info.get("pe")
         fwd_pe = info.get("forward_pe")
@@ -1209,9 +1236,10 @@ with tab7:
     if st.button("🤖 종목 AI 해설 보기", key="stock_ai"):
         name_str = info.get("name") or selected_ticker
 
+        market_name_map = {"US": "미국", "KR": "한국", "EU": "유럽"}
         stock_ctx = {
             "종목": f"{name_str} ({selected_ticker})",
-            "시장": "미국" if selected_market == "US" else "한국",
+            "시장": market_name_map.get(selected_market, selected_market),
             "현재가": f"{symbol}{current_price:,.2f}",
             "1일 변동": f"{daily_change:+.2f}%",
             "RSI(14)": f"{rsi_now:.1f}",
@@ -1253,7 +1281,7 @@ with tab7:
     with fund_tab1:
         if st.button("📊 재무 분석 시작", key="fin_btn"):
             
-            if selected_market == "US":
+            if selected_market in ("US", "EU"):
                 with st.spinner("yfinance에서 재무 가져오는 중..."):
                     fin_data = load_financials(selected_ticker, selected_market)
                 
@@ -1418,9 +1446,12 @@ with tab7:
         if st.button("🎯 종합 점수 계산", key="score_btn"):
             with st.spinner("GPT-5 mini가 종합 평가 중..."):
                 # 재무 데이터 다시 불러오기 (캐시되어 있음)
-                if selected_market == "US":
+                if selected_market in ("US", "EU"):
                     fin_data = load_financials(selected_ticker, selected_market)
                     metrics = fin_data["key_metrics"]
+                else:
+                    kr_data = load_korean_financials(selected_ticker)
+                    metrics = kr_data.get("key_metrics", {})
                 else:
                     kr_data = load_korean_financials(selected_ticker)
                     metrics = kr_data.get("key_metrics", {})
