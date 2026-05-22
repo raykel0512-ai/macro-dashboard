@@ -39,26 +39,61 @@ def load_all_corp_codes():
     print("📥 DART 전체 회사 코드 다운로드 중...")
     url = f"{DART_BASE}/corpCode.xml"
     params = {"crtfc_key": DART_API_KEY}
-    resp = requests.get(url, params=params, timeout=120)
     
-    if resp.status_code != 200:
-        print(f"❌ 회사 코드 다운로드 실패: {resp.status_code}")
-        return {}
+    # 재시도 로직 (최대 3회)
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, params=params, timeout=120)
+            
+            print(f"   응답 상태: {resp.status_code}")
+            print(f"   응답 크기: {len(resp.content)} bytes")
+            print(f"   Content-Type: {resp.headers.get('Content-Type', 'unknown')}")
+            
+            if resp.status_code != 200:
+                print(f"❌ HTTP 에러: {resp.status_code}")
+                if attempt < 2:
+                    print(f"   3초 후 재시도... ({attempt + 2}/3)")
+                    time.sleep(3)
+                    continue
+                return {}
+            
+            # ZIP인지 확인 (ZIP 파일은 'PK'로 시작)
+            if not resp.content.startswith(b'PK'):
+                # ZIP이 아니면 응답 내용 확인
+                preview = resp.content[:500].decode('utf-8', errors='ignore')
+                print(f"⚠️ ZIP 아닌 응답 받음. 내용 미리보기:")
+                print(f"   {preview}")
+                
+                if attempt < 2:
+                    print(f"   5초 후 재시도... ({attempt + 2}/3)")
+                    time.sleep(5)
+                    continue
+                return {}
+            
+            # ZIP 정상 처리
+            z = zipfile.ZipFile(io.BytesIO(resp.content))
+            xml_data = z.read(z.namelist()[0]).decode("utf-8")
+            root = ET.fromstring(xml_data)
+            
+            mapping = {}
+            for item in root.findall("list"):
+                sc = item.findtext("stock_code", "").strip()
+                if sc:
+                    corp_code = item.findtext("corp_code", "").strip()
+                    corp_name = item.findtext("corp_name", "").strip()
+                    mapping[sc] = (corp_code, corp_name)
+            
+            print(f"✅ {len(mapping)}개 상장사 매핑 로드")
+            return mapping
+            
+        except Exception as e:
+            print(f"❌ 시도 {attempt + 1} 실패: {e}")
+            if attempt < 2:
+                time.sleep(5)
+            else:
+                return {}
     
-    z = zipfile.ZipFile(io.BytesIO(resp.content))
-    xml_data = z.read(z.namelist()[0]).decode("utf-8")
-    root = ET.fromstring(xml_data)
-    
-    mapping = {}
-    for item in root.findall("list"):
-        sc = item.findtext("stock_code", "").strip()
-        if sc:
-            corp_code = item.findtext("corp_code", "").strip()
-            corp_name = item.findtext("corp_name", "").strip()
-            mapping[sc] = (corp_code, corp_name)
-    
-    print(f"✅ {len(mapping)}개 상장사 매핑 로드")
-    return mapping
+    return {}
 
 
 def get_amount_from_list(items, account_nm_list):
