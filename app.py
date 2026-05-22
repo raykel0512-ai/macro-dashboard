@@ -16,8 +16,6 @@ import FinanceDataReader as fdr
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, SMAIndicator
 from ta.volatility import BollingerBands
-import OpenDartReader
-import requests
 
 # ============================================
 # 페이지 설정
@@ -42,15 +40,9 @@ def get_openai():
 @st.cache_resource
 def get_supabase():
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-@st.cache_resource
-def get_dart():
-    try:
-        return OpenDartReader(st.secrets["DART_API_KEY"])
-    except Exception as e:
-        st.warning(f"DART 연결 실패: {e}")
-        return None
 
-dart = get_dart()
+# DART는 GitHub Actions가 처리. Streamlit에서는 Supabase만 조회.
+st.sidebar.info("💡 한국 종목 재무는 매주 일요일 자동 업데이트됩니다")
 fred = get_fred()
 sb = get_supabase()
 
@@ -231,14 +223,11 @@ def load_financials(ticker, market):
     
     return result
 # ============================================
-# 한국 종목 재무 (DART)
+# 한국 종목 재무 (Supabase 캐시)
 # ============================================
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=3600)  # 1시간 캐시
 def load_korean_financials(ticker):
-    """DART에서 한국 종목 재무 가져오기"""
-    if dart is None:
-        return {"error": "DART 연결 안 됨"}
-    
+    """Supabase에서 한국 종목 재무 가져오기 (GitHub Actions가 미리 수집)"""
     result = {
         "company": None,
         "key_metrics": {},
@@ -246,100 +235,59 @@ def load_korean_financials(ticker):
     }
     
     try:
-        # 회사 기본 정보
-        company = dart.company(ticker)
-        result["company"] = company
+        # 1. 회사 정보 가져오기
+        company_resp = sb.table("kr_companies").select("*").eq("ticker", ticker).execute()
         
-        # 최근 3개 연도 사업보고서 재무
-        current_year = datetime.now().year
-        years_to_try = [current_year - 1, current_year - 2, current_year - 3]
-        
-        financial_data = []
-        for year in years_to_try:
-            try:
-                # 1: 사업보고서 (연간)
-                fs = dart.finstate(ticker, year, reprt_code='11011')
-                if fs is not None and not fs.empty:
-                    financial_data.append((year, fs))
-            except:
-                continue
-        
-        if not financial_data:
-            result["error"] = "DART에서 재무 데이터를 못 찾았어요"
+        if not company_resp.data:
+            result["error"] = (
+                f"📋 {ticker} 종목 재무 데이터가 아직 없어요.\n\n"
+                "워치리스트에 추가하셨다면 다음 자동 업데이트(매주 일요일 새벽)에 반영됩니다.\n"
+                "또는 GitHub Actions에서 수동 실행으로 즉시 수집 가능해요."
+            )
             return result
         
-        # 가장 최신 연도 데이터로 주요 지표 계산
-        latest_year, latest_fs = financial_data[0]
+        result["company"] = company_resp.data[0]
         
-        # 연결재무제표 우선, 없으면 별도
-        cfs = latest_fs[latest_fs['fs_div'] == 'CFS'] if 'fs_div' in latest_fs.columns else latest_fs
-        if cfs.empty:
-            cfs = latest_fs[latest_fs['fs_div'] == 'OFS'] if 'fs_div' in latest_fs.columns else latest_fs
+        # 2. 재무 데이터 가져오기 (최신순)
+        fin_resp = sb.table("kr_financials").select("*").eq("ticker", ticker).order("fiscal_year", desc=True).execute()
         
-        def get_amount(account_nm_list):
-            """계정명으로 금액 찾기"""
-            for nm in account_nm_list:
-                row = cfs[cfs['account_nm'].str.contains(nm, na=False)]
-                if not row.empty:
-                    try:
-                        return float(row.iloc[0]['thstrm_amount'].replace(',', ''))
-                    except:
-                        return None
-            return None
+        if not fin_resp.data:
+            result["error"] = f"📋 {ticker} 재무 데이터가 아직 없어요. GitHub Actions 실행 대기 중."
+            return result
         
-        revenue = get_amount(['매출액', '수익(매출액)', '영업수익'])
-        op_profit = get_amount(['영업이익'])
-        net_income = get_amount(['당기순이익', '연결당기순이익'])
-        total_assets = get_amount(['자산총계'])
-        total_equity = get_amount(['자본총계'])
-        total_liabilities = get_amount(['부채총계'])
+        # 가장 최신 연도 데이터
+        latest = fin_resp.data[0]
         
         result["key_metrics"] = {
-            "기준연도": f"{latest_year}년",
-            "매출액": revenue,
-            "영업이익": op_profit,
-            "당기순이익": net_income,
-            "자산총계": total_assets,
-            "자본총계": total_equity,
-            "부채총계": total_liabilities,
-            "영업이익률": (op_profit / revenue * 100) if (revenue and op_profit) else None,
-            "순이익률": (net_income / revenue * 100) if (revenue and net_income) else None,
-            "ROE": (net_income / total_equity * 100) if (total_equity and net_income) else None,
-            "ROA": (net_income / total_assets * 100) if (total_assets and net_income) else None,
-            "부채비율": (total_liabilities / total_equity * 100) if (total_equity and total_liabilities) else None,
+            "기준연도": f"{latest['fiscal_year']}년",
+            "매출액": latest.get("revenue"),
+            "영업이익": latest.get("operating_profit"),
+            "당기순이익": latest.get("net_income"),
+            "자산총계": latest.get("total_assets"),
+            "자본총계": latest.get("total_equity"),
+            "부채총계": latest.get("total_liabilities"),
+            "영업이익률": latest.get("operating_margin"),
+            "순이익률": latest.get("net_margin"),
+            "ROE": latest.get("roe"),
+            "ROA": latest.get("roa"),
+            "부채비율": latest.get("debt_ratio"),
         }
         
-        # 연도별 추이 (매출/영업이익/순이익)
+        # 3. 연도별 추이 (오래된 순으로 정렬)
         history = []
-        for year, fs in financial_data:
-            try:
-                cfs_year = fs[fs['fs_div'] == 'CFS'] if 'fs_div' in fs.columns else fs
-                if cfs_year.empty:
-                    cfs_year = fs
-                
-                def get_year_amount(account_nm_list, df):
-                    for nm in account_nm_list:
-                        row = df[df['account_nm'].str.contains(nm, na=False)]
-                        if not row.empty:
-                            try:
-                                return float(row.iloc[0]['thstrm_amount'].replace(',', ''))
-                            except:
-                                return None
-                    return None
-                
-                history.append({
-                    "year": year,
-                    "revenue": get_year_amount(['매출액', '수익(매출액)', '영업수익'], cfs_year),
-                    "op_profit": get_year_amount(['영업이익'], cfs_year),
-                    "net_income": get_year_amount(['당기순이익', '연결당기순이익'], cfs_year),
-                })
-            except:
-                continue
+        for row in sorted(fin_resp.data, key=lambda x: x["fiscal_year"]):
+            history.append({
+                "year": row["fiscal_year"],
+                "revenue": row.get("revenue"),
+                "op_profit": row.get("operating_profit"),
+                "net_income": row.get("net_income"),
+            })
         
-        result["income_history"] = sorted(history, key=lambda x: x["year"])
+        result["income_history"] = history
+        result["last_updated"] = latest.get("updated_at")
         
     except Exception as e:
-        result["error"] = str(e)
+        result["error"] = f"Supabase 조회 실패: {e}"
     
     return result
     
