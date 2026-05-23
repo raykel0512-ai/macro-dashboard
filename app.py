@@ -1,5 +1,5 @@
-# v3.3
-# 투자 대시보드 - 매크로 + 종목 분석 (US/KR/EU) + AI
+# v3.4
+# 투자 대시보드 - 매크로 + 종목 분석 (US/KR/EU) + 웹검색 AI
 # Made by Raykel
 
 import streamlit as st
@@ -21,7 +21,7 @@ from ta.volatility import BollingerBands
 # 페이지 설정
 # ============================================
 st.set_page_config(
-    page_title="투자 대시보드 v3.3",
+    page_title="투자 대시보드 v3.4",
     page_icon="📊",
     layout="wide"
 )
@@ -46,6 +46,7 @@ sb = get_supabase()
 
 # 사이드바 안내
 st.sidebar.info("💡 한국 종목 재무는 매주 일요일 자동 업데이트됩니다")
+st.sidebar.caption("🔍 펀더멘털 분석 일부는 웹 검색 기반")
 
 # ============================================
 # 공통 함수 (매크로)
@@ -71,7 +72,7 @@ def get_latest_value(series_id):
         return None, None, None
 
 # ============================================
-# AI 해설 함수
+# AI 해설 함수 (일반)
 # ============================================
 @st.cache_data(ttl=3600)
 def ai_commentary(context_data, focus):
@@ -121,7 +122,6 @@ def load_stock_data(ticker, market, years=2):
                 df.columns = df.columns.get_level_values(0)
 
         elif market == "EU":
-            # 유럽: yfinance 직접 (티커에 .PA, .DE, .L 등 접미사 포함 필요)
             df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
@@ -255,7 +255,7 @@ def load_financials(ticker, market):
 # ============================================
 @st.cache_data(ttl=3600)
 def load_korean_financials(ticker):
-    """Supabase에서 한국 종목 재무 가져오기 (GitHub Actions가 미리 수집)"""
+    """Supabase에서 한국 종목 재무 가져오기"""
     result = {
         "company": None,
         "key_metrics": {},
@@ -348,7 +348,6 @@ def format_percent(num):
     return f"{num*100:.2f}%" if abs(num) < 10 else f"{num:.2f}%"
 
 def get_currency_symbol(currency):
-    """통화 심볼"""
     return {
         "KRW": "₩",
         "EUR": "€",
@@ -358,7 +357,7 @@ def get_currency_symbol(currency):
     }.get(currency, "$")
 
 # ============================================
-# 펀더멘털 AI 함수들
+# 펀더멘털 AI - 재무 분석 (웹 검색 X, 데이터 기반)
 # ============================================
 @st.cache_data(ttl=86400)
 def ai_financial_analysis(ticker, name, market, key_metrics, recent_trends=""):
@@ -397,6 +396,9 @@ def ai_financial_analysis(ticker, name, market, key_metrics, recent_trends=""):
     except Exception as e:
         return f"분석 실패: {e}"
 
+# ============================================
+# 펀더멘털 AI - 수익구조 (웹 검색 사용)
+# ============================================
 @st.cache_data(ttl=86400)
 def ai_revenue_structure(ticker, name, market, sector="", industry=""):
     try:
@@ -404,30 +406,38 @@ def ai_revenue_structure(ticker, name, market, sector="", industry=""):
         prompt = f"""[{name} ({ticker}, {market}) 수익구조 분석]
 섹터: {sector} / 산업: {industry}
 
-다음을 한국어로 정리:
-1. 주요 사업부문 / 제품군 (매출 비중 가능하면)
-2. 핵심 수익원 (Top 3)
-3. 매출 지역별 분포 (국내/해외 비중)
-4. 비즈니스 모델 (B2B/B2C, 구독/판매 등)
+웹 검색으로 최신 사업보고서/IR 자료를 찾아서 다음을 한국어로 정리해줘:
+
+1. 주요 사업부문 / 제품군 (매출 비중 % 명시)
+2. 핵심 수익원 Top 3 (구체적 제품/서비스명)
+3. 매출 지역별 분포 (국내/해외, 또는 지역별 %)
+4. 비즈니스 모델 (B2B/B2C, 구독/판매, 마진 구조)
 5. 매출 안정성 및 계절성
+6. 최근 분기 매출 추세
 
 규칙:
-- 알려진 사실만, 모르면 '확인 필요'
-- 8-12문장
+- 검색 결과에서 정확한 수치 인용 (예: "iPhone 매출 52%")
+- 출처가 명확하지 않은 부분만 '확인 필요'로 표시
+- 첫 줄에 '🔍 웹 검색 기반 - 검색 결과 시점 정보' 명시
+- 10-15문장
 """
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model="gpt-5-mini",
-            max_completion_tokens=3000,
-            reasoning_effort="low",
-            messages=[{"role": "user", "content": prompt}]
+            tools=[{"type": "web_search"}],
+            tool_choice="auto",
+            reasoning={"effort": "low"},
+            input=prompt,
         )
-        result = response.choices[0].message.content
+        result = response.output_text
         if not result or not result.strip():
-            return f"⚠️ 응답 비어있음 (finish_reason: {response.choices[0].finish_reason})"
+            return "⚠️ 웹 검색 응답 비어있음. 잠시 후 다시 시도해주세요."
         return result
     except Exception as e:
         return f"분석 실패: {e}"
 
+# ============================================
+# 펀더멘털 AI - 밸류체인 (웹 검색 사용)
+# ============================================
 @st.cache_data(ttl=86400)
 def ai_value_chain(ticker, name, market, sector="", industry=""):
     try:
@@ -435,76 +445,89 @@ def ai_value_chain(ticker, name, market, sector="", industry=""):
         prompt = f"""[{name} ({ticker}, {market}) 밸류체인 분석]
 섹터: {sector} / 산업: {industry}
 
-다음 구조로 한국어 정리:
+웹 검색으로 최신 정보를 찾아서 다음 구조로 한국어 정리:
 
 1. 업스트림 (공급망)
    - 핵심 원재료 / 부품
-   - 주요 공급업체
-   - 공급망 리스크
+   - 주요 공급업체 (구체적 회사명)
+   - 공급망 리스크 (지정학적·원자재 가격 등)
 
 2. 미드스트림 (자체 사업)
    - 핵심 제조/서비스 역량
-   - 주요 자산
-   - 경쟁우위
+   - 주요 자산 (공장 위치, R&D 거점)
+   - 경쟁우위 요소
 
 3. 다운스트림 (고객/유통)
-   - 주요 고객층
+   - 주요 고객사 (구체적 회사명, B2B인 경우)
    - 유통 채널
    - 고객 집중도 리스크
 
 4. 산업 내 포지셔닝
-   - 직접 경쟁사 3-5개
-   - 시장 점유율 (대략)
+   - 직접 경쟁사 3-5개 (시가총액·매출 함께)
+   - 시장 점유율 (가능한 한 % 명시)
    - 차별화 포인트
 
 규칙:
-- 알려진 사실만, 모르면 '확인 필요'
-- 12-18문장
+- 웹 검색 결과에서 구체적 수치·회사명 적극 활용
+- 출처가 명확하지 않은 부분만 '확인 필요'
+- 첫 줄에 '🔍 웹 검색 기반 - 검색 결과 시점 정보' 명시
+- 15-20문장
 """
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model="gpt-5-mini",
-            max_completion_tokens=4000,
-            reasoning_effort="low",
-            messages=[{"role": "user", "content": prompt}]
+            tools=[{"type": "web_search"}],
+            tool_choice="auto",
+            reasoning={"effort": "low"},
+            input=prompt,
         )
-        result = response.choices[0].message.content
+        result = response.output_text
         if not result or not result.strip():
-            return f"⚠️ 응답 비어있음 (finish_reason: {response.choices[0].finish_reason})"
+            return "⚠️ 웹 검색 응답 비어있음. 잠시 후 다시 시도해주세요."
         return result
     except Exception as e:
         return f"분석 실패: {e}"
 
+# ============================================
+# 펀더멘털 AI - 연혁 (웹 검색 사용)
+# ============================================
 @st.cache_data(ttl=86400)
 def ai_company_history(ticker, name, market):
     try:
         client = get_openai()
         prompt = f"""[{name} ({ticker}, {market}) 회사 연혁]
 
-다음 구조로 한국어 정리:
+웹 검색으로 최신 정보를 찾아서 다음 구조로 한국어 정리:
+
 1. 창립 (연도, 창업자, 초기 사업)
-2. 주요 변곡점 (인수, 사업 전환, IPO 등 5-7개)
-3. 현재 CEO / 핵심 경영진
+2. 주요 변곡점 (인수합병, 사업 전환, IPO 등 5-7개 + 연도)
+3. 현재 CEO / 핵심 경영진 (이름과 취임 시기)
 4. 주요 경쟁사 (3-5개)
-5. 최근 3-5년 주요 이슈
+5. 최근 3-5년 주요 이슈 (실적·사건·전략 변화)
+6. 최근 12개월 내 주목할 만한 뉴스
 
 규칙:
-- 알려진 사실만, 모르면 '확인 필요'
-- 연도와 함께 서술
-- 10-15문장
+- 웹 검색 결과로 정확한 연도·인물 명시
+- 출처가 명확하지 않은 부분만 '확인 필요'
+- 첫 줄에 '🔍 웹 검색 기반 - 검색 결과 시점 정보' 명시
+- 12-18문장
 """
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model="gpt-5-mini",
-            max_completion_tokens=3500,
-            reasoning_effort="low",
-            messages=[{"role": "user", "content": prompt}]
+            tools=[{"type": "web_search"}],
+            tool_choice="auto",
+            reasoning={"effort": "low"},
+            input=prompt,
         )
-        result = response.choices[0].message.content
+        result = response.output_text
         if not result or not result.strip():
-            return f"⚠️ 응답 비어있음 (finish_reason: {response.choices[0].finish_reason})"
+            return "⚠️ 웹 검색 응답 비어있음. 잠시 후 다시 시도해주세요."
         return result
     except Exception as e:
         return f"분석 실패: {e}"
 
+# ============================================
+# 펀더멘털 AI - 종합 점수 (웹 검색 X, 데이터 기반)
+# ============================================
 @st.cache_data(ttl=86400)
 def ai_overall_score(ticker, name, market, metrics_text):
     try:
@@ -610,8 +633,8 @@ def delete_note(note_id):
 # ============================================
 # 헤더
 # ============================================
-st.title("📊 투자 대시보드 v3.3")
-st.caption(f"매크로 + 종목 분석 (US/KR/EU) + AI 해설 | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+st.title("📊 투자 대시보드 v3.4")
+st.caption(f"매크로 + 종목 분석 (US/KR/EU) + 웹검색 AI | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
 # ============================================
 # 탭 구성
@@ -946,7 +969,7 @@ with tab6:
         st.plotly_chart(fig, use_container_width=True)
 
 # ============================================
-# 📈 TAB 7: Stocks (US/KR/EU 지원)
+# 📈 TAB 7: Stocks
 # ============================================
 with tab7:
     st.header("개별 종목 분석")
@@ -1029,7 +1052,6 @@ with tab7:
     currency = info.get("currency", "USD")
     symbol = get_currency_symbol(currency)
 
-    # 52주 데이터 안전 처리
     high52 = info.get("52w_high")
     low52 = info.get("52w_low")
     if not high52 and len(df) > 0:
@@ -1048,7 +1070,6 @@ with tab7:
     col4.metric("RSI (14)", f"{df['RSI'].iloc[-1]:.1f}",
                 "과매수" if df['RSI'].iloc[-1] > 70 else ("과매도" if df['RSI'].iloc[-1] < 30 else "중립"))
 
-    # 추가 펀더멘털 (미국·유럽)
     if selected_market in ("US", "EU") and info.get("pe"):
         col5, col6, col7, col8 = st.columns(4)
         pe = info.get("pe")
@@ -1180,7 +1201,7 @@ with tab7:
 
     # ====== 펀더멘털 분석 ======
     st.subheader("📚 펀더멘털 분석")
-    st.caption("⚠️ AI 일반 지식 기반 분석은 부정확할 수 있어요. 한국 종목은 DART 공식 데이터 사용.")
+    st.caption("💡 수익구조 / 밸류체인 / 연혁은 **웹 검색 기반**으로 최신 정보 제공 (분석에 10~30초 소요)")
 
     fund_tab1, fund_tab2, fund_tab3, fund_tab4, fund_tab5 = st.tabs([
         "💰 재무", "🏢 수익구조", "🔗 밸류체인", "📜 연혁", "🎯 종합점수"
@@ -1222,7 +1243,6 @@ with tab7:
                     c15.metric("유동비율", f"{metrics.get('유동비율'):.2f}" if metrics.get("유동비율") else "N/A")
                     c16.metric("배당수익률", format_percent(metrics.get("배당수익률")))
 
-                    # 연간 매출 차트
                     if fin_data["income_stmt"] is not None and not fin_data["income_stmt"].empty:
                         try:
                             income = fin_data["income_stmt"]
@@ -1247,7 +1267,6 @@ with tab7:
                         except:
                             pass
 
-                    # AI 분석
                     st.divider()
                     st.write("**🤖 AI 재무 분석**")
                     with st.spinner("GPT-5 mini 분석 중..."):
@@ -1317,11 +1336,12 @@ with tab7:
                         )
                         st.info(analysis)
 
-    # --- 🏢 수익구조 ---
+    # --- 🏢 수익구조 (웹 검색) ---
     with fund_tab2:
-        if st.button("🏢 수익구조 AI 분석", key="rev_btn"):
+        st.caption("🔍 웹 검색으로 최신 사업보고서/IR 자료 기반 분석")
+        if st.button("🏢 수익구조 AI 분석 (웹 검색)", key="rev_btn"):
             market_full_map = {"US": "미국", "KR": "한국", "EU": "유럽"}
-            with st.spinner("GPT-5 mini 분석 중..."):
+            with st.spinner("웹 검색 + GPT-5 mini 분석 중... (10~30초)"):
                 analysis = ai_revenue_structure(
                     selected_ticker, info.get("name", selected_ticker),
                     market_full_map.get(selected_market, selected_market),
@@ -1329,11 +1349,12 @@ with tab7:
                 )
                 st.info(analysis)
 
-    # --- 🔗 밸류체인 ---
+    # --- 🔗 밸류체인 (웹 검색) ---
     with fund_tab3:
-        if st.button("🔗 밸류체인 AI 분석", key="vc_btn"):
+        st.caption("🔍 웹 검색으로 공급망/경쟁사 최신 정보 기반 분석")
+        if st.button("🔗 밸류체인 AI 분석 (웹 검색)", key="vc_btn"):
             market_full_map = {"US": "미국", "KR": "한국", "EU": "유럽"}
-            with st.spinner("GPT-5 mini 분석 중..."):
+            with st.spinner("웹 검색 + GPT-5 mini 분석 중... (10~30초)"):
                 analysis = ai_value_chain(
                     selected_ticker, info.get("name", selected_ticker),
                     market_full_map.get(selected_market, selected_market),
@@ -1341,11 +1362,12 @@ with tab7:
                 )
                 st.info(analysis)
 
-    # --- 📜 연혁 ---
+    # --- 📜 연혁 (웹 검색) ---
     with fund_tab4:
-        if st.button("📜 회사 연혁 AI 분석", key="hist_btn"):
+        st.caption("🔍 웹 검색으로 최신 회사 연혁/뉴스 기반 분석")
+        if st.button("📜 회사 연혁 AI 분석 (웹 검색)", key="hist_btn"):
             market_full_map = {"US": "미국", "KR": "한국", "EU": "유럽"}
-            with st.spinner("GPT-5 mini 분석 중..."):
+            with st.spinner("웹 검색 + GPT-5 mini 분석 중... (10~30초)"):
                 analysis = ai_company_history(
                     selected_ticker, info.get("name", selected_ticker),
                     market_full_map.get(selected_market, selected_market)
@@ -1427,4 +1449,4 @@ with tab7:
 # 푸터
 # ============================================
 st.divider()
-st.caption("Data: FRED + yfinance + FinanceDataReader + DART(Supabase) | AI: GPT-5 mini | Made by Raykel")
+st.caption("Data: FRED + yfinance + FinanceDataReader + DART(Supabase) | AI: GPT-5 mini + Web Search | Made by Raykel")
