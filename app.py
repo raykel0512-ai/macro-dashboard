@@ -834,6 +834,131 @@ with tab3:
 # ============================================
 with tab4:
     st.header("한국 매크로")
+    
+    # ====== 한국 침체 신호 점수판 ======
+    st.subheader("🚨 한국 경기 침체 신호")
+    
+    kr_signals = {}
+    kr_score = 0
+    
+    # 1. 한국 실업률 3개월 변화
+    unrate_data = load_series("LRHUTTTTKRM156S", years=2)
+    if len(unrate_data) > 4:
+        latest_ur = unrate_data.iloc[-1]
+        ur_3m_ago = unrate_data.iloc[-4] if len(unrate_data) > 4 else unrate_data.iloc[0]
+        ur_change = latest_ur - ur_3m_ago
+        is_warning = ur_change > 0.3
+        kr_signals["실업률 3개월 변화"] = {
+            "value": f"{ur_change:+.2f}%p (현재 {latest_ur:.2f}%)",
+            "warning": is_warning,
+            "desc": "+0.3%p 이상 = 노동시장 악화"
+        }
+        if is_warning:
+            kr_score += 1
+    
+    # 2. 한국 CPI YoY
+    cpi_data = load_series("KORCPIALLMINMEI", years=3)
+    if len(cpi_data) > 12:
+        cpi_yoy = cpi_data.pct_change(periods=12).dropna() * 100
+        if len(cpi_yoy) > 0:
+            latest_cpi = cpi_yoy.iloc[-1]
+            is_warning = latest_cpi > 3.0 or latest_cpi < 0
+            kr_signals["한국 CPI YoY"] = {
+                "value": f"{latest_cpi:+.2f}%",
+                "warning": is_warning,
+                "desc": "3% 초과 (인플레) 또는 0% 미만 (디플레) 우려"
+            }
+            if is_warning:
+                kr_score += 1
+    
+    # 3. 한국 산업생산 YoY
+    ip_data = load_series("KORPROINDMISMEI", years=3)
+    if len(ip_data) > 12:
+        ip_yoy = ip_data.pct_change(periods=12).dropna() * 100
+        if len(ip_yoy) > 0:
+            latest_ip = ip_yoy.iloc[-1]
+            is_warning = latest_ip < -2.0
+            kr_signals["한국 산업생산 YoY"] = {
+                "value": f"{latest_ip:+.2f}%",
+                "warning": is_warning,
+                "desc": "-2% 이하 = 제조업 침체"
+            }
+            if is_warning:
+                kr_score += 1
+    
+    # 4. 원/달러 3개월 변동률
+    krw_data = load_series("DEXKOUS", years=1)
+    if len(krw_data) > 60:
+        latest_krw = krw_data.iloc[-1]
+        krw_3m_ago = krw_data.iloc[-60]  # 약 3개월 (영업일 기준)
+        krw_change = (latest_krw - krw_3m_ago) / krw_3m_ago * 100
+        is_warning = krw_change > 5.0
+        kr_signals["원/달러 3개월 변동률"] = {
+            "value": f"{krw_change:+.2f}% (현재 ₩{latest_krw:.0f})",
+            "warning": is_warning,
+            "desc": "+5% 이상 = 원화 약세 (자본 유출 우려)"
+        }
+        if is_warning:
+            kr_score += 1
+    
+    # 5. KOSPI vs S&P500 3개월 상대성과
+    try:
+        end = datetime.now()
+        start = end - timedelta(days=120)
+        kospi = yf.download("^KS11", start=start, end=end, progress=False, auto_adjust=True)
+        spx = yf.download("^GSPC", start=start, end=end, progress=False, auto_adjust=True)
+        
+        if isinstance(kospi.columns, pd.MultiIndex):
+            kospi.columns = kospi.columns.get_level_values(0)
+        if isinstance(spx.columns, pd.MultiIndex):
+            spx.columns = spx.columns.get_level_values(0)
+        
+        if not kospi.empty and not spx.empty:
+            kospi_return = (kospi["Close"].iloc[-1] / kospi["Close"].iloc[0] - 1) * 100
+            spx_return = (spx["Close"].iloc[-1] / spx["Close"].iloc[0] - 1) * 100
+            relative = kospi_return - spx_return
+            is_warning = relative < -10.0
+            kr_signals["KOSPI vs S&P500 (3개월)"] = {
+                "value": f"{relative:+.2f}%p (KOSPI {kospi_return:+.1f}% / S&P {spx_return:+.1f}%)",
+                "warning": is_warning,
+                "desc": "-10%p 이하 = 한국 시장 약세"
+            }
+            if is_warning:
+                kr_score += 1
+    except Exception as e:
+        st.caption(f"KOSPI 비교 로딩 실패: {e}")
+    
+    kr_total = len(kr_signals)
+    
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        st.metric("⚠️ 점등된 신호", f"{kr_score} / {kr_total}")
+        if kr_score == 0:
+            st.success("정상 국면")
+        elif kr_score <= 2:
+            st.warning("주의 단계")
+        else:
+            st.error("경계 단계")
+    with col2:
+        for name, info in kr_signals.items():
+            icon = "🔴" if info["warning"] else "🟢"
+            st.write(f"{icon} **{name}**: {info['value']} — _{info['desc']}_")
+    
+    if st.button("🤖 한국 침체 신호 AI 해설", key="kr_recession_ai"):
+        ctx = {name: info["value"] for name, info in kr_signals.items()}
+        ctx["점등 신호 수"] = f"{kr_score}/{kr_total}"
+        with st.spinner("GPT-5 mini가 분석 중..."):
+            commentary = ai_commentary(
+                ctx,
+                "한국 경기 침체 신호들을 종합 진단해줘. 미국 경기 영향도 고려하고, 한국 특유의 리스크(수출 의존도, 환율) 관점에서."
+            )
+            st.info(commentary)
+    
+    st.divider()
+    
+    # ====== 기존 한국 매크로 지표 ======
+    st.subheader("📊 한국 주요 매크로 지표")
+    
     korea_indicators = {
         "원/달러 환율": "DEXKOUS",
         "한국 CPI YoY (%)": "KORCPIALLMINMEI",
