@@ -1,0 +1,47 @@
+name: Update ECOS Macro
+
+on:
+  # 매주 월요일 새벽 5시 KST (UTC 20:00 일)
+  schedule:
+    - cron: '0 20 * * 0'
+  
+  # 수동 실행
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests supabase==2.9.1
+      
+      - name: Verify secrets
+        env:
+          ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          echo "ECOS_API_KEY length: ${#ECOS_API_KEY}"
+          echo "SUPABASE_URL length: ${#SUPABASE_URL}"
+          echo "SUPABASE_KEY length: ${#SUPABASE_KEY}"
+          if [ -z "$ECOS_API_KEY" ]; then echo "❌ ECOS_API_KEY empty"; exit 1; fi
+          echo "✅ All secrets present"
+      
+      - name: Run ECOS updater
+        env:
+          ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python -u scripts/ecos_updater.py
