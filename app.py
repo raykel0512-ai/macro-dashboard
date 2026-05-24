@@ -830,8 +830,26 @@ with tab3:
             st.info(commentary)
 
 # ============================================
-# 🇰🇷 TAB 4: Korea
+# 🇰🇷 TAB 4: Korea (ECOS 데이터 통합)
 # ============================================
+
+# ECOS 데이터 로딩 함수
+@st.cache_data(ttl=3600)
+def load_ecos_series(series_id, years=3):
+    """Supabase에서 ECOS 시계열 로드"""
+    try:
+        start_date = (datetime.now() - timedelta(days=365 * years)).date().isoformat()
+        resp = sb.table("kr_macro").select("*").eq("series_id", series_id).gte("observation_date", start_date).order("observation_date").execute()
+        if not resp.data:
+            return pd.Series(dtype=float)
+        df = pd.DataFrame(resp.data)
+        df["observation_date"] = pd.to_datetime(df["observation_date"])
+        df = df.set_index("observation_date")
+        return df["value"].astype(float)
+    except Exception as e:
+        st.caption(f"ECOS 로딩 실패 ({series_id}): {e}")
+        return pd.Series(dtype=float)
+
 with tab4:
     st.header("한국 매크로")
     
@@ -841,7 +859,25 @@ with tab4:
     kr_signals = {}
     kr_score = 0
     
-    # 1. 한국 실업률 3개월 변화
+    # 1. 한국 장단기 금리차 (10년 - 3년) ⭐ NEW
+    gov_10y = load_ecos_series("kr_gov_10y")
+    gov_3y = load_ecos_series("kr_gov_3y")
+    if not gov_10y.empty and not gov_3y.empty:
+        # 같은 날짜 매칭
+        spread_df = pd.DataFrame({"y10": gov_10y, "y3": gov_3y}).dropna()
+        if len(spread_df) > 0:
+            spread_df["spread"] = spread_df["y10"] - spread_df["y3"]
+            latest_spread = spread_df["spread"].iloc[-1]
+            is_warning = latest_spread < 0
+            kr_signals["한국 장단기 스프레드 (10Y-3Y)"] = {
+                "value": f"{latest_spread:.2f}%p",
+                "warning": is_warning,
+                "desc": "음수 = 역전 (침체 선행 신호)"
+            }
+            if is_warning:
+                kr_score += 1
+    
+    # 2. 한국 실업률 3개월 변화
     unrate_data = load_series("LRHUTTTTKRM156S", years=2)
     if len(unrate_data) > 4:
         latest_ur = unrate_data.iloc[-1]
@@ -856,7 +892,7 @@ with tab4:
         if is_warning:
             kr_score += 1
     
-    # 2. 한국 CPI YoY
+    # 3. 한국 CPI YoY
     cpi_data = load_series("KORCPIALLMINMEI", years=3)
     if len(cpi_data) > 12:
         cpi_yoy = cpi_data.pct_change(periods=12).dropna() * 100
@@ -866,12 +902,12 @@ with tab4:
             kr_signals["한국 CPI YoY"] = {
                 "value": f"{latest_cpi:+.2f}%",
                 "warning": is_warning,
-                "desc": "3% 초과 (인플레) 또는 0% 미만 (디플레) 우려"
+                "desc": "3% 초과 (인플레) 또는 0% 미만 (디플레)"
             }
             if is_warning:
                 kr_score += 1
     
-    # 3. 한국 산업생산 YoY
+    # 4. 한국 산업생산 YoY
     ip_data = load_series("KORPROINDMISMEI", years=3)
     if len(ip_data) > 12:
         ip_yoy = ip_data.pct_change(periods=12).dropna() * 100
@@ -886,11 +922,11 @@ with tab4:
             if is_warning:
                 kr_score += 1
     
-    # 4. 원/달러 3개월 변동률
+    # 5. 원/달러 3개월 변동률
     krw_data = load_series("DEXKOUS", years=1)
     if len(krw_data) > 60:
         latest_krw = krw_data.iloc[-1]
-        krw_3m_ago = krw_data.iloc[-60]  # 약 3개월 (영업일 기준)
+        krw_3m_ago = krw_data.iloc[-60]
         krw_change = (latest_krw - krw_3m_ago) / krw_3m_ago * 100
         is_warning = krw_change > 5.0
         kr_signals["원/달러 3개월 변동률"] = {
@@ -901,7 +937,35 @@ with tab4:
         if is_warning:
             kr_score += 1
     
-    # 5. KOSPI vs S&P500 3개월 상대성과
+    # 6. 수출 YoY ⭐ NEW
+    export_data = load_ecos_series("kr_export", years=3)
+    if len(export_data) > 12:
+        export_yoy = export_data.pct_change(periods=12).dropna() * 100
+        if len(export_yoy) > 0:
+            latest_export = export_yoy.iloc[-1]
+            is_warning = latest_export < -5.0
+            kr_signals["수출 금액 YoY"] = {
+                "value": f"{latest_export:+.2f}%",
+                "warning": is_warning,
+                "desc": "-5% 이하 = 수출 부진 (한국 경제 핵심 지표)"
+            }
+            if is_warning:
+                kr_score += 1
+    
+    # 7. CSI 소비자심리 ⭐ NEW
+    csi_data = load_ecos_series("kr_csi")
+    if not csi_data.empty:
+        latest_csi = csi_data.iloc[-1]
+        is_warning = latest_csi < 95.0  # 100 미만 = 비관
+        kr_signals["CSI 소비자심리"] = {
+            "value": f"{latest_csi:.1f}",
+            "warning": is_warning,
+            "desc": "95 미만 = 소비 위축 (100 = 기준선)"
+        }
+        if is_warning:
+            kr_score += 1
+    
+    # 8. KOSPI vs S&P500 3개월 상대성과
     try:
         end = datetime.now()
         start = end - timedelta(days=120)
@@ -935,7 +999,7 @@ with tab4:
         st.metric("⚠️ 점등된 신호", f"{kr_score} / {kr_total}")
         if kr_score == 0:
             st.success("정상 국면")
-        elif kr_score <= 2:
+        elif kr_score <= 3:
             st.warning("주의 단계")
         else:
             st.error("경계 단계")
@@ -950,13 +1014,66 @@ with tab4:
         with st.spinner("GPT-5 mini가 분석 중..."):
             commentary = ai_commentary(
                 ctx,
-                "한국 경기 침체 신호들을 종합 진단해줘. 미국 경기 영향도 고려하고, 한국 특유의 리스크(수출 의존도, 환율) 관점에서."
+                "한국 경기 침체 신호들을 종합 진단해줘. 미국 경기 영향, 한국 특유의 리스크(수출 의존도, 환율, 가계부채) 고려."
             )
             st.info(commentary)
     
     st.divider()
     
-    # ====== 기존 한국 매크로 지표 ======
+    # ====== 한국 장단기 금리 추이 차트 ⭐ NEW ======
+    st.subheader("📉 한국 금리 추이")
+    
+    if not gov_10y.empty and not gov_3y.empty:
+        fig_rate = go.Figure()
+        fig_rate.add_trace(go.Scatter(
+            x=gov_10y.index, y=gov_10y.values,
+            mode='lines', name='국고채 10년',
+            line=dict(color='#1f77b4', width=2)
+        ))
+        fig_rate.add_trace(go.Scatter(
+            x=gov_3y.index, y=gov_3y.values,
+            mode='lines', name='국고채 3년',
+            line=dict(color='#ff7f0e', width=2)
+        ))
+        
+        # 기준금리 추가
+        base_rate = load_ecos_series("kr_base_rate")
+        if not base_rate.empty:
+            fig_rate.add_trace(go.Scatter(
+                x=base_rate.index, y=base_rate.values,
+                mode='lines', name='기준금리',
+                line=dict(color='#d62728', width=2, dash='dash')
+            ))
+        
+        fig_rate.update_layout(
+            title="한국 주요 금리 추이 (3년)",
+            yaxis_title="금리 (%)",
+            height=400, template='plotly_white',
+            hovermode='x unified'
+        )
+        st.plotly_chart(fig_rate, use_container_width=True)
+        
+        # 스프레드 차트
+        spread_series = (gov_10y - gov_3y).dropna()
+        if len(spread_series) > 0:
+            fig_spread = go.Figure()
+            fig_spread.add_trace(go.Scatter(
+                x=spread_series.index, y=spread_series.values,
+                mode='lines', name='10Y-3Y 스프레드',
+                line=dict(color='#2ca02c', width=2),
+                fill='tozeroy', fillcolor='rgba(44, 160, 44, 0.1)'
+            ))
+            fig_spread.add_hline(y=0, line_dash="dash", line_color="red", annotation_text="역전선")
+            fig_spread.update_layout(
+                title="한국 장단기 스프레드 (10Y - 3Y)",
+                yaxis_title="%p",
+                height=350, template='plotly_white'
+            )
+            st.plotly_chart(fig_spread, use_container_width=True)
+    
+    st.divider()
+    
+    # ====== 한국 주요 지표 카드 (기존) ======
     st.subheader("📊 한국 주요 매크로 지표")
     
     korea_indicators = {
@@ -982,7 +1099,10 @@ with tab4:
         korea_summary[label] = round(latest, 2)
         with cols[i % 3]:
             st.metric(label, f"{latest:,.2f}", f"{delta:+,.2f}")
+    
     st.divider()
+    
+    # ====== 원/달러 차트 (기존) ======
     krw = load_series("DEXKOUS", years=5)
     if len(krw) > 0:
         fig = go.Figure()
@@ -992,6 +1112,7 @@ with tab4:
         ))
         fig.update_layout(title="원/달러 환율 (5년)", height=400, template='plotly_white')
         st.plotly_chart(fig, use_container_width=True)
+    
     if st.button("🤖 한국 매크로 AI 해설 보기", key="korea_ai"):
         with st.spinner("GPT-5 mini가 분석 중..."):
             commentary = ai_commentary(
